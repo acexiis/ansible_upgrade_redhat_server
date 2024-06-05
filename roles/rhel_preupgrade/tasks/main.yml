@@ -1,0 +1,304 @@
+---
+# tasks file for preupgrade
+
+- name: Checking using root user
+  ansible.builtin.command: echo $USER
+  register: user
+
+- debug: msg="{{user.stdout}}"
+
+################# MOVE ALL ALTERNATE REPOS ##########
+- name: Create backup directory
+  file:
+    path: /etc/yum.repos.d/backup
+    state: directory
+
+- name: Find all alternate repos
+  find:
+    paths: /etc/yum.repos.d/
+    patterns: "*"
+    recurse: no
+  register: found_repos
+
+- debug:
+    msg: "{{ item.path | basename }}"
+  loop: "{{ found_repos.files }}"
+
+- name: Move files except "redhat"
+  command: "mv {{ item.path }} {{ item.path | dirname}}/backup/{{ item.path | basename }}.backup"
+  loop: "{{ found_repos.files }}"
+  when: "item.path | basename != 'redhat.repo'"
+################# SUBSCRIPTION #################################
+
+- name: Subscription_status
+  block:
+    - name: Check subscription status
+      ansible.builtin.shell: subscription-manager status
+      register: subscription_status
+      ignore_errors: true
+
+    - debug: msg="{{subscription_status.stdout}}"
+
+    - name: Check if "Content Access" is in the debug message
+      set_fact:
+        content_access_found: "{{ 'Content Access' in subscription_status.stdout }}"
+
+    - name: Disbale all repos to attach to the only needed repository
+      ansible.builtin.command: subscription-manager repos --disable=*
+      when: content_access_found
+      ignore_errors: true
+
+    - name: Enable rhel-7-server-rpms repos
+      ansible.builtin.shell: subscription-manager repos --enable rhel-7-server-rpms
+      when: content_access_found
+
+    - name: Enable --enable rhel-7-server-extras-rpms
+      ansible.builtin.shell: subscription-manager repos --enable rhel-7-server-extras-rpms
+      when: content_access_found
+
+    - name: Update all packages with yum
+      yum:
+        name: "*"
+        state: latest
+        skip_broken: yes
+        update_cache: yes
+      register: update_task
+
+    - name: Reboot to apply new kernel if available
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting machine in 5 seconds"
+      when: update_task.changed
+
+    - name: Checking using root user
+      ansible.builtin.command: echo $USER
+      register: user
+
+    - debug: msg="{{ user.stdout }}"
+  tags: subscription_refresh
+
+###### Delete old Kernel #################################
+- name: Delete old kernel block
+  block:
+    - name: Get the default kernel version
+      command: uname -r
+      register: default_kernel
+
+    - name: List installed kernels
+      command: rpm -q kernel
+      register: installed_kernels
+
+    - name: debug installed kernels
+      debug:
+        msg: "{{ installed_kernels.stdout_lines | length }}"
+
+    - name: Reboot to apply new kernel if available
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting machine in 5 seconds"
+      when: installed_kernels.stdout_lines | length > 1
+
+    - name: Remove old kernels
+      command: yum remove -y {{ item | regex_replace('.x86_64$', '') }}
+      with_items: "{{ installed_kernels.stdout_lines }}"
+      when: "default_kernel.stdout not in item"
+      register: delete_kernel
+
+    - name: List installed kernel-devel packages
+      command: rpm -q kernel-devel
+      register: installed_kernel_devel
+      ignore_errors: true
+
+    - name: Remove old kernel-devel packages
+      ansible.builtin.shell: yum remove -y {{ item | regex_replace('.x86_64$', '') }}
+      with_items: "{{ installed_kernel_devel.stdout_lines }}"
+      when: "default_kernel.stdout not in item"
+      ignore_errors: true
+      register: delete_kernel_devel
+
+    - name: Clean up packages
+      command: yum autoremove -y
+
+    - name: Reboot
+      ansible.builtin.reboot:
+        reboot_timeout: 300
+        msg: "Rebooting machine in 5 seconds"
+      when: delete_kernel.changed or delete_kernel_devel.changed
+
+  tags: delete_kernel
+
+#########################Disbale FIPS if needed #######################################
+
+- name: Disbale FIPS mode if enable
+  ansible.builtin.shell: sysctl crypto.fips_enabled | grep "1"
+  register: fips_enabled
+  ignore_errors: true
+
+- name: Run the second command if "= 1" is found
+  command: fips-mode-setup --disable
+  when: fips_enabled.rc == 0 # If grep finds "= 1", rc will be 0
+
+################################################################
+############### Comment and umount NFS & umount #########################
+- name: Stop autofs.services.
+  ansible.builtin.service:
+    name: autofs.service
+    state: stopped
+    enabled: false
+  ignore_errors: true
+
+- name: Comment nfs and umount
+  block:
+    - name: Comment out nfs line in fstab
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        backrefs: yes
+        regexp: '^(?!#)(.*?\b[nN][fF][sS]\b.*?)$'
+        line: '## \1'
+        backup: yes
+      tags: umount
+
+    - name: Comment regular web mount (Probably NFS)
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        backrefs: yes
+        regexp: '^(?!#)(.*?\/var\/www\/html.*\b.*?)$'
+        line: '## \1'
+        backup: yes
+      tags: umount
+
+    - name: all line that contain nfs
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: "^(?!#)(.*nfs.*)"
+        replace: '## \1'
+      tags: umount
+
+    - debug: msg="{{ansible_mounts  | json_query('[?contains(mount, `html`)].device')}}"
+      tags: umount
+
+    - name: Filter devices containing "html" or "nfs"
+      set_fact:
+        html_mounts: "{{ ansible_mounts | json_query('[?contains(mount, `html`) || contains(mount, `nfs`)].device') }}"
+      tags: umount
+
+    - name: Unmount nfs or html
+      ansible.builtin.command: umount -l {{ item }}
+      loop: "{{ html_mounts }}"
+      tags: umount
+
+    - debug: msg="{{ansible_mounts | json_query('[?contains(device, `html`)|| contains(device, `nfs`)].device') }}"
+      tags: umount
+
+    - name: Filter devices containing "html" or "nfs"
+      set_fact:
+        html_devices: "{{ ansible_mounts | json_query('[?contains(device, `html`) || contains(device, `nfs`)].device') }}"
+      tags: umount
+
+    - name: Unmount nfs or html
+      ansible.builtin.command: umount -l {{ item }}
+      loop: "{{ html_devices }}"
+      tags: umount
+      ignore_errors: true
+  tags: nfs
+
+################################################################
+- name: Install leapp-upgrade
+  package:
+    name: leapp-upgrade
+    state: present
+  ignore_errors: true
+
+- name: Delete Floopy disk from boot load
+  ansible.builtin.command: rmmod floppy
+  tags: leapp-preupgrade
+  ignore_errors: true
+
+- name: Delete pata_acpi from boot load
+  ansible.builtin.command: rmmod pata_acpi
+  tags: leapp-preupgrade
+  ignore_errors: true
+
+- name: Stop the firewalld
+  ansible.builtin.command: systemctl stop firewalld.service
+
+- name: delete old openssl lib
+  ansible.builtin.yum:
+    name: openssl11-libs
+    state: absent
+
+- name: Comment Old Cipher in sshd_config
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    backrefs: yes
+    regexp: '^(?!#)(.*?Ciphers\b.*?)$'
+    line: '## \1'
+    backup: yes
+
+- name: Comment Old MACs in sshd_config
+  ansible.builtin.lineinfile:
+    path: /etc/ssh/sshd_config
+    backrefs: yes
+    regexp: '^(?!#)(.*?MACs\b.*?)$'
+    line: '## \1'
+    backup: yes
+
+- name: Delete bad PHP package causing upgrade error
+  ansible.builtin.yum:
+    name: php56w-common-5.6.40-1.w7.x86_64
+    state: absent
+################### NEW REGISTRATION ######################
+- name: new REGISTRATION
+  block:
+    - name: Remove subscription
+      ansible.builtin.shell: subscription-manager remove --all
+
+    - name: Unregister server
+      ansible.builtin.shell: subscription-manager unregister
+      tags: register
+
+    - name: Clean all subscriptions
+      ansible.builtin.shell: subscription-manager clean
+      tags: register
+
+    - name: Register the server using satellite account
+      ansible.builtin.command: subscription-manager register --username={{satellite_username}} --password={{satellite_password}} --environment={{satellite_env}}
+      tags: register
+
+    - name: Disbale all repos to attach to the only needed repository
+      ansible.builtin.command: subscription-manager repos --disable=*
+      when: content_access_found
+      ignore_errors: true
+
+    - name: Enable rhel-7-server-rpms repos
+      ansible.builtin.shell: subscription-manager repos --enable rhel-7-server-rpms
+      when: content_access_found
+
+    - name: Enable --enable rhel-7-server-extras-rpms
+      ansible.builtin.shell: subscription-manager repos --enable rhel-7-server-extras-rpms
+      when: content_access_found
+
+    - name: Clear YUM cache
+      ansible.builtin.command: yum clean all
+  tags: new_registration
+
+################################################################
+################ RUN PRE UPGRADE ###############################
+- name: Start PreUpgrade
+  block:
+    - name: Check if leapp-report.txt exists
+      stat:
+        path: /var/log/leapp/leapp-report.txt
+      register: leap_report
+
+    - name: Run first leapp preupgrade (it'll probably failed because we need to generate a file and complete the file) - /var/log/leapp/leapp-report.txt
+      ansible.builtin.shell: /bin/leapp preupgrade --target 8.10
+      ignore_errors: true
+      when: leap_report.stat.exists == false
+
+    - name: Fill the answer file for remove pam_pkc11 package if needed
+      ansible.builtin.command: leapp answer --section remove_pam_pkcs11_module_check.confirm=True
+
+    - name: Run leapp preupgrade
+      ansible.builtin.shell: /bin/leapp preupgrade --target 8.10
+  tags: leapp-preupgrade

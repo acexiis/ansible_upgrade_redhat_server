@@ -1,0 +1,99 @@
+---
+# tasks file for postupgrade
+
+- name: Checking using root user
+  ansible.builtin.command: echo $USER
+  register: user
+
+- debug: msg="{{user.stdout}}"
+
+- name: Install the latest version of yumutils
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  ansible.builtin.yum:
+    name: yum-utils
+    state: latest
+
+- name: Start and enable autofs.services
+  ansible.builtin.service:
+    name: autofs.service
+    state: started
+    enabled: true
+  ignore_errors: true
+
+- name: Update for new Python Version
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  ansible.builtin.command: alternatives --set python /usr/bin/python3
+
+- name: new REGISTRATION
+  block:
+    - name: Remove subscription
+      ansible.builtin.shell: subscription-manager remove --all
+
+    - name: Unregister server
+      ansible.builtin.shell: subscription-manager unregister
+      tags: register
+
+    - name: Clean all subscriptions
+      ansible.builtin.shell: subscription-manager clean
+      tags: register
+
+    - name: Register the server using satellite account
+      ansible.builtin.command: subscription-manager register --username={{satellite_username}} --password={{satellite_password}} --environment=Prod/RHEL8
+      tags: register
+
+    - name: Clear YUM cache
+      ansible.builtin.command: yum clean all
+  tags: new_registration_postupgrade
+
+- name: Reactivate firewall service
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  ansible.builtin.command: systemctl start firewalld.service
+
+- name: Uncomment fstab
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  replace:
+    path: /etc/fstab
+    regexp: "^## "
+    replace: ""
+
+- name: Save the RHEL version
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  ansible.builtin.command: cat /etc/redhat-release
+  register: rhel_version
+
+- name: Print the RHEL version
+  vars:
+    ansible_python_interpreter: /usr/bin/python3
+  ansible.builtin.debug:
+    var: rhel_version.stdout
+
+- name: Last reboot to reload all mount points
+  ansible.builtin.reboot:
+    msg: "Rebooting machine in 5 seconds"
+#- name: Download last version of OpenSHH
+#  vars:
+#    ansible_python_interpreter: /usr/bin/python3
+#  ansible.builtin.command: yumdownloader openssh-8.0p1-19.el8_8.x86_64 \
+#    openssh-clients-8.0p1-19.el8_8.x86_64 openssh-server-8.0p1-19.el8_8.x86_64
+
+#- name: Install the latest version of OpenSSH
+#  vars:
+#    ansible_python_interpreter: /usr/bin/python3
+#  ansible.builtin.command: rpm -i --force ./openssh-8.0p1-19.el8_8.x86_64.rpm \
+#        ./openssh-clients-8.0p1-19.el8_8.x86_64.rpm ./openssh-server-8.0p1-19.el8_8.x86_64.rpm
+
+#- name: Delete RPM file after Install
+#  vars:
+#    ansible_python_interpreter: /usr/bin/python3
+#  ansible.builtin.file:
+#    path: "{{ item }}"
+#    state: absent
+#  loop:
+#    - "/openssh-8.0p1-19.el8_8.x86_64.rpm"
+#    - "/openssh-server-8.0p1-19.el8_8.x86_64.rpm"
+#    - "openssh-clients-8.0p1-19.el8_8.x86_64.rpm"

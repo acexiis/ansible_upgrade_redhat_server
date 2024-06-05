@@ -1,0 +1,35 @@
+---
+# tasks file for upgrade
+
+- name: Checking using root user
+  ansible.builtin.command: echo $USER
+  register: user
+
+- debug: msg="{{user.stdout}}"
+
+
+############################ We need to be sure no error or inhibitor are pin the leapp-report.xt ####################################
+# if upgrade failed we have to fix the error and restart --leapp-preupgrade #################################
+
+- name: Grep error or inhibitor in the leapp file result
+  ansible.builtin.command: "grep -cE 'Risk Factor: high \\(error\\)|Risk Factor: high \\(inhibitor\\)' /var/log/leapp/leapp-report.txt"
+  register: grep_result
+  ignore_errors: yes
+
+- name: Debug the registered result
+  ansible.builtin.debug:
+    var: grep_result.stdout
+
+- name: Check if debug message count is greater than 0
+  fail:
+    msg: "Error or Inhibitor in leapp-report.txt, stopping Ansible."
+  when: grep_result.stdout != "0"
+
+- name: Upgrade RHEL 7 to RHEL 8
+  ansible.builtin.shell: /bin/leapp upgrade --target 8.10
+
+- name: Reboot
+  ansible.builtin.reboot:
+    msg: "Rebooting machine in 5 seconds"
+    reboot_timeout: 1800
+  tags: reboot

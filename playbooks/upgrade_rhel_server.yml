@@ -1,0 +1,46 @@
+---
+# Playbook to upgrade RHEL 7.X to 8.9
+# This playbook use 3 roles:
+# - preupgrade (prepare the upgrade and must be done to proceed to upgrade)
+# - Upgrade (Run the upgrade)
+# - postupgrade (Check the upgrade and restore the configuration like fstab, etc.)
+
+- name: Upgrade RHEL7 servers to RHEL8.9
+  hosts: all
+  become: true
+  remote_user: root
+  connection: ssh
+  # Only use this var for testing in your local machine
+  vars_files:
+    - ../vars.yml
+
+  environment:
+    PATH: /sbin:/bin:/usr/sbin:/usr/bin:/usr/local/sbin
+
+  gather_facts: true
+
+  tasks:
+    - name: Checking using root user
+      command: echo $USER
+      register: user
+
+    - debug: msg="{{user.stdout}}"
+
+    - name: Import preupgrade
+      import_role:
+        name: ../roles/rhel_preupgrade
+      register: preupgrade
+      when: ansible_distribution_major_version|int < 8
+      tags: preupgrade
+
+    - name: Import Upgrade
+      import_role:
+        name: ../roles/rhel_upgrade
+      when: ansible_distribution_major_version|int < 8
+      tags: upgrade
+
+    - name: Import postupgrade
+      import_role:
+        name: ../roles/rhel_postupgrade
+      when: ansible_distribution_major_version|int == 8
+      tags: postupgrade

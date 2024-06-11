@@ -139,6 +139,18 @@
   when: fips_enabled.rc == 0 # If grep finds "= 1", rc will be 0
 
 ################################################################
+############# DISBABLE HTTPD.SERVICE FOR HUNG SERVERS ##########
+- name: Populate service facts
+  service_facts:
+  when: "'hung' in ansible_run_tags"
+
+- name: Disbale httpd.servcice for Hung servers
+  ansible.builtin.service:
+    name: httpd.service
+    state: stopped
+    enabled: false
+  when: "'hung' in ansible_run_tags and 'httpd' in services"
+
 ############### Comment and umount NFS & umount #########################
 - name: Stop autofs.services.
   ansible.builtin.service:
@@ -156,7 +168,6 @@
         regexp: '^(?!#)(.*?\b[nN][fF][sS]\b.*?)$'
         line: '## \1'
         backup: yes
-      tags: umount
 
     - name: Comment regular web mount (Probably NFS)
       ansible.builtin.lineinfile:
@@ -165,35 +176,34 @@
         regexp: '^(?!#)(.*?\/var\/www\/html.*\b.*?)$'
         line: '## \1'
         backup: yes
-      tags: umount
 
     - name: all line that contain nfs
       ansible.builtin.replace:
         path: /etc/fstab
-        regexp: "^(?!#)(.*nfs.*)"
+        regexp: "^(?!#)(.*[nN][fF][sS].*)"
         replace: '## \1'
-      tags: umount
+
+    - name: all line that contain nfs
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: "^(?!#)(.*[hH][tT][mM][lL].*)"
+        replace: '## \1'
 
     - debug: msg="{{ansible_mounts  | json_query('[?contains(mount, `html`)].device')}}"
-      tags: umount
 
     - name: Filter devices containing "html" or "nfs"
       set_fact:
         html_mounts: "{{ ansible_mounts | json_query('[?contains(mount, `html`) || contains(mount, `nfs`)].device') }}"
-      tags: umount
 
     - name: Unmount nfs or html
       ansible.builtin.command: umount -l {{ item }}
       loop: "{{ html_mounts }}"
-      tags: umount
 
     - debug: msg="{{ansible_mounts | json_query('[?contains(device, `html`)|| contains(device, `nfs`)].device') }}"
-      tags: umount
 
     - name: Filter devices containing "html" or "nfs"
       set_fact:
         html_devices: "{{ ansible_mounts | json_query('[?contains(device, `html`) || contains(device, `nfs`)].device') }}"
-      tags: umount
 
     - name: Unmount nfs or html
       ansible.builtin.command: umount -l {{ item }}
@@ -208,6 +218,7 @@
     name: leapp-upgrade
     state: present
   ignore_errors: true
+  tags: leapp
 
 - name: Delete Floopy disk from boot load
   ansible.builtin.command: rmmod floppy
@@ -292,7 +303,7 @@
       register: leap_report
 
     - name: Run first leapp preupgrade (it'll probably failed because we need to generate a file and complete the file) - /var/log/leapp/leapp-report.txt
-      ansible.builtin.shell: /bin/leapp preupgrade --target 8.10
+      ansible.builtin.shell: /bin/leapp preupgrade --target 8.9
       ignore_errors: true
       when: leap_report.stat.exists == false
 
@@ -300,5 +311,5 @@
       ansible.builtin.command: leapp answer --section remove_pam_pkcs11_module_check.confirm=True
 
     - name: Run leapp preupgrade
-      ansible.builtin.shell: /bin/leapp preupgrade --target 8.10
+      ansible.builtin.shell: /bin/leapp preupgrade --target 8.9
   tags: leapp-preupgrade

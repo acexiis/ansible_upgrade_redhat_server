@@ -34,6 +34,7 @@ this playbook works with 3 main tags:
   - preupgrade
   - upgrade
   - postupgrade
+    
 For now it's better to run this 3 tags one by one because this playbook have to reboot server
 few times and the role after reboot can be ignored.
 

@@ -29,7 +29,7 @@ All those below variables have to be set and example are provide in vars_sample.
 Example Playbook
 ----------------
 
-ansible-playbook -i your_inventory/hosts playbooks/upgrade_rhel_server.yml
+``` ansible-playbook -i your_inventory/hosts playbooks/upgrade_rhel_server.yml ```
 this playbook works with 3 main tags: 
   - preupgrade
   - upgrade

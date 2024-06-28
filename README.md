@@ -1,6 +1,6 @@
 INFORMATION
 ===========
-This playbook mainly work with redhat and Satellite configuration but yiu can easely adapt it, if you do not use Satellite.
+This playbook mainly work with redhat and Satellite configuration but you can easely adapt it, if you do not use Satellite.
 Playbook Name
 =============
   - upgrade_rhel-servers.yml
